@@ -1,0 +1,67 @@
+name: "Jong: build experimental steam_api"
+
+# the experimental steam_api(64).dll with the Jong overlay link (overlay_experimental/jong_pipe.cpp): on a push to this branch only
+on:
+  push:
+    branches: ["jong-overlay"]
+  workflow_dispatch:
+
+# the reused deps workflow asks for write (its cache); this fork holds no secrets
+permissions:
+  contents: "write"
+
+env:
+  PREMAKE_ACTION: "vs2022"
+  DEPS_CACHE_KEY: "emu-deps-win"
+  DEPS_CACHE_DIR: "build/deps/win"
+  THIRD_PARTY_BASE_DIR: "third-party"
+  MAX_PARALLEL_JOBS: 4
+
+jobs:
+  deps:
+    name: "Restore or build deps"
+    uses: "./.github/workflows/emu-deps-win-vs22.yml"
+
+  build:
+    needs: ["deps"]
+    runs-on: "windows-2022"
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ["x64", "Win32"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: microsoft/setup-msbuild@v3
+      - name: "Ensure LF line ending"
+        shell: "cmd"
+        run: |
+          git config --local core.autocrlf false
+          git config --global core.autocrlf false
+      - name: "Restore deps"
+        uses: actions/cache@v5
+        with:
+          key: "${{ env.DEPS_CACHE_KEY }}-${{ env.PREMAKE_ACTION }}"
+          path: "${{ env.DEPS_CACHE_DIR }}/${{ env.PREMAKE_ACTION }}"
+      - uses: actions/checkout@v6
+        with:
+          ref: "third-party/common/win"
+          path: "${{ env.THIRD_PARTY_BASE_DIR }}/common/win"
+      - uses: actions/checkout@v6
+        with:
+          ref: "third-party/build/win"
+          path: "${{ env.THIRD_PARTY_BASE_DIR }}/build/win"
+      - name: "Generate project files"
+        shell: "cmd"
+        run: |
+          "${{ env.THIRD_PARTY_BASE_DIR }}\common\win\premake\premake5.exe" --file=premake5.lua --genproto --emubuild=${{ github.sha }} --dosstub --winrsrc --winsign --os=windows vs2022
+      - name: "Build api_experimental"
+        shell: "cmd"
+        working-directory: "${{ github.workspace }}/build/project/vs2022/win"
+        run: |
+          msbuild /nologo /target:api_experimental /m:1 -p:CL_MPCount=${{ env.MAX_PARALLEL_JOBS }} /v:m /p:Configuration=release,Platform=${{ matrix.arch }} gbe.sln
+      - uses: actions/upload-artifact@v7
+        with:
+          name: "jong-api-experimental-${{ matrix.arch }}"
+          path: "build/win/vs2022/release/experimental"
+          if-no-files-found: "error"
+          retention-days: 7

@@ -182,6 +182,10 @@ class Steam_Overlay
     std::chrono::milliseconds last_scheduled_show_time{}; // tracks the last scheduled show time for spacing
 
     bool overlay_state_changed = false;
+    // Jong (jong_pipe): its overlay is up; the invite / join it asked for, until that friend shows up on the LAN
+    bool jong_active = false;
+    std::string jong_want{}, jong_name{};
+    std::chrono::steady_clock::time_point jong_until{};
 
     std::atomic<bool> i_have_lobby = false;
 
@@ -396,6 +400,8 @@ class Steam_Overlay
     void invite_friend(uint64 friend_id, class Steam_Friends* steamFriends, class Steam_Matchmaking* steamMatchmaking);
     void steam_run_callback_friends_actions();
     void steam_run_callback();
+    // Jong's overlay instead of this one (jong_pipe)
+    void jong_run_callback();
 
     void networking_msg_received(Common_Message* msg);
 

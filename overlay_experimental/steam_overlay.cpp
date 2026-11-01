@@ -6,6 +6,7 @@
 // avoids confusing ImGui when another label has the same text "MyText"
 
 #include "overlay/steam_overlay.h"
+#include "overlay/jong_pipe.h"
 
 #include <thread>
 #include <string>
@@ -269,6 +270,7 @@ Steam_Overlay::Steam_Overlay(Settings* settings, Local_Storage *local_storage, S
 
     this->network->setCallback(CALLBACK_ID_STEAM_MESSAGES, settings->get_local_steam_id(), &Steam_Overlay::overlay_networking_callback, this);
     this->run_every_runcb->add(&Steam_Overlay::overlay_run_callback, this);
+    jong_pipe::start();
 }
 
 Steam_Overlay::~Steam_Overlay()
@@ -612,11 +614,12 @@ void Steam_Overlay::overlay_state_hook(bool ready)
 // called when the user presses SHIFT + TAB
 bool Steam_Overlay::open_overlay_hook(bool toggle)
 {
+    // Jong: its overlay, not this one (nothing at all when Jong isn't running)
     if (toggle) {
-        ShowOverlay(!show_overlay);
+        jong_pipe::send("{\"op\":\"toggle\"}");
     }
 
-    return show_overlay;
+    return jong_active;
 }
 
 void Steam_Overlay::allow_renderer_frame_processing(bool state, bool cleaning_up_overlay)
@@ -2631,6 +2634,10 @@ bool Steam_Overlay::ShowOverlay() const
 
 void Steam_Overlay::ShowOverlay(bool state)
 {
+    // Jong: the game's own requests (ActivateGameOverlay*) open / close Jong's overlay; this one is never drawn
+    jong_pipe::send(state ? "{\"op\":\"open\"}" : "{\"op\":\"close\"}");
+    if (state || !show_overlay) return;
+
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
     if (!Ready() || show_overlay == state) return;
 
@@ -2912,6 +2919,7 @@ void Steam_Overlay::steam_run_callback_friends_actions()
 
 void Steam_Overlay::steam_run_callback()
 {
+    jong_run_callback();
     if (!Ready()) return;
 
     if (overlay_state_changed) {
@@ -4319,3 +4327,62 @@ void Steam_Overlay::render_pinned_screenshot()
 
 
 #endif
+
+
+// -- Jong (jong_pipe) --
+// its overlay opened / closed: the game is told as it would be by Steam's (it pauses, frees the mouse...).
+// {"ev":"invite"|"join","name":"..."}: invite that friend to the game (our lobby / connect string), or join theirs.
+// The friend is found by its name (Jong puts the member's Jong name in configs.user.ini) once it is on the LAN
+void Steam_Overlay::jong_run_callback()
+{
+    std::string line{};
+    while (jong_pipe::poll(line)) {
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (!j.is_object()) continue;
+        std::string ev = j.value("ev", std::string());
+        if (ev == "opened" || ev == "closed") {
+            bool on = ev == "opened";
+            if (on == jong_active) continue;
+            jong_active = on;
+            GameOverlayActivated_t data{};
+            data.m_bActive = on;
+            data.m_bUserInitiated = true;
+            data.m_dwOverlayPID = 123;
+            data.m_nAppID = settings->get_local_game_id().AppID();
+            callbacks->addCBResult(data.k_iCallback, &data, sizeof(data));
+        } else if (ev == "invite" || ev == "join") {
+            jong_want = ev;
+            jong_name = j.value("name", std::string());
+            jong_until = std::chrono::steady_clock::now() + std::chrono::minutes(3);
+        }
+    }
+
+    if (jong_want.empty()) return;
+    if (jong_name.empty() || std::chrono::steady_clock::now() > jong_until) { jong_want.clear(); return; }
+    if (!overlay_mutex.try_lock()) return;  // as steam_run_callback(): never wait for it here
+
+    Steam_Friends* steamFriends = get_steam_client()->steam_friends;
+    Steam_Matchmaking* steamMatchmaking = get_steam_client()->steam_matchmaking;
+    uint32 appid = settings->get_local_game_id().AppID();
+    for (auto &f : friends) {
+        if (f.first.name() != jong_name || f.first.appid() != appid) continue;
+        uint64 friend_id = (uint64)f.first.id();
+        if (jong_want == "invite") {
+            steam_run_callback_update_my_lobby();
+            if (!i_have_lobby) break;  // not in a lobby / game yet: asked again on the next run
+            invite_friend(friend_id, steamFriends, steamMatchmaking);
+        } else {
+            FriendGameInfo_t info{};
+            steamFriends->GetFriendGamePlayed(friend_id, &info);
+            if (!info.m_steamIDLobby.IsValid() && !std::string(steamFriends->get_friend_rich_presence_silent(friend_id, "connect")).length()) break;  // nothing to join yet
+            f.second.window_state |= window_state_join;  // as the overlay's «Join»
+            has_friend_action.push(f.first);
+            steam_run_callback_friends_actions();
+        }
+        PRINT_DEBUG("Jong %s '%s' (%" PRIu64 ")", jong_want.c_str(), jong_name.c_str(), friend_id);
+        jong_want.clear();
+        break;
+    }
+
+    overlay_mutex.unlock();
+}

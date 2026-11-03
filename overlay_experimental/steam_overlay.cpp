@@ -2665,6 +2665,7 @@ void Steam_Overlay::SetLobbyInvite(Friend friendId, uint64 lobbyId)
         frd.window_state |= window_state_lobby_invite;
         // Make sure don't have rich presence invite and a lobby invite (it should not happen but who knows)
         frd.window_state &= ~window_state_rich_invite;
+        jong_invite_in(i->first);
         add_invite_notification(*i);
         notify_sound_user_invite(i->second);
     }
@@ -2684,6 +2685,7 @@ void Steam_Overlay::SetRichInvite(Friend friendId, const char* connect_str)
         frd.window_state |= window_state_rich_invite;
         // Make sure don't have rich presence invite and a lobby invite (it should not happen but who knows)
         frd.window_state &= ~window_state_lobby_invite;
+        jong_invite_in(i->first);
         add_invite_notification(*i);
         notify_sound_user_invite(i->second);
     }
@@ -4350,11 +4352,29 @@ void Steam_Overlay::jong_run_callback()
             data.m_dwOverlayPID = 123;
             data.m_nAppID = settings->get_local_game_id().AppID();
             callbacks->addCBResult(data.k_iCallback, &data, sizeof(data));
+        } else if (ev == "accept") {
+            // the member clicked Jong's notification of a friend's invite: as the overlay's «accept»
+            // a string: a 64-bit Steam id doesn't fit a JavaScript number
+            try { jong_accept = std::stoull(j.value("fid", std::string("0"))); } catch (...) { jong_accept = 0; }
         } else if (ev == "invite" || ev == "join") {
             jong_want = ev;
             jong_name = j.value("name", std::string());
             jong_until = std::chrono::steady_clock::now() + std::chrono::minutes(3);
         }
+    }
+
+    if (jong_accept && overlay_mutex.try_lock()) {  // as steam_run_callback(): never wait for it here (else on the next run)
+        for (auto &f : friends) {
+            if ((uint64)f.first.id() != jong_accept) continue;
+            if (f.second.window_state & (window_state_lobby_invite | window_state_rich_invite)) {
+                f.second.window_state |= window_state_join;
+                has_friend_action.push(f.first);
+                steam_run_callback_friends_actions();
+            }
+            break;
+        }
+        jong_accept = 0;
+        overlay_mutex.unlock();
     }
 
     if (jong_want.empty()) return;
@@ -4385,4 +4405,11 @@ void Steam_Overlay::jong_run_callback()
     }
 
     overlay_mutex.unlock();
+}
+
+// a friend's invite came in: Jong shows its own notification over the game (a tap accepts it, {"ev":"accept","fid"})
+void Steam_Overlay::jong_invite_in(const Friend &f)
+{
+    nlohmann::json j{ { "op", "invite" }, { "name", f.name() }, { "fid", std::to_string((uint64)f.id()) } };
+    jong_pipe::send(j.dump());
 }

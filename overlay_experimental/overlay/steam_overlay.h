@@ -186,6 +186,7 @@ class Steam_Overlay
     bool jong_active = false;
     std::string jong_want{}, jong_name{};
     std::chrono::steady_clock::time_point jong_until{};
+    uint64 jong_accept = 0;  // a friend's invite Jong's notification accepted (their steam id)
 
     std::atomic<bool> i_have_lobby = false;
 
@@ -402,6 +403,7 @@ class Steam_Overlay
     void steam_run_callback();
     // Jong's overlay instead of this one (jong_pipe)
     void jong_run_callback();
+    void jong_invite_in(const Friend &f);
 
     void networking_msg_received(Common_Message* msg);
 

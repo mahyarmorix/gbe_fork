@@ -2474,6 +2474,11 @@ void Steam_Overlay::SetupOverlay()
     PRINT_DEBUG_ENTRY();
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
 
+    // Jong: its overlay is Jong's own window (jong_pipe), this one is never drawn, so the game's graphics are never hooked
+    // (the renderer detector made a game crash in d3d11.dll on some PCs). Invites, joins and «open the overlay» go
+    // through the pipe without it; the ImGui parts below stay as they were, not Ready()
+    return;
+
     bool not_called_yet = false;
     if (setup_overlay_called.compare_exchange_weak(not_called_yet, true)) {
         if (settings->overlay_hook_delay_sec > 0) {
@@ -2592,7 +2597,7 @@ void Steam_Overlay::OpenOverlayInvite(CSteamID lobbyId)
 {
     PRINT_DEBUG("%llu", lobbyId.ConvertToUint64());
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
-    if (!Ready()) return;
+    // Jong: its overlay, Ready() or not
 
     // remember the lobby the game wants the invitations to be sent to,
     // the actual invite happens later when the user clicks "invite" on a friend
@@ -2606,7 +2611,7 @@ void Steam_Overlay::OpenOverlay(const char* pchDialog)
 {
     PRINT_DEBUG("TODO '%s'", pchDialog);
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
-    if (!Ready()) return;
+    // Jong: its overlay, Ready() or not
 
     // TODO: Show pages depending on pchDialog
     if ((strncmp(pchDialog, "Friends", sizeof("Friends") - 1) == 0) && (settings->overlayAutoAcceptInvitesCount() > 0)) {
@@ -2621,7 +2626,7 @@ void Steam_Overlay::OpenOverlayWebpage(const char* pchURL)
 {
     PRINT_DEBUG("TODO '%s'", pchURL);
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
-    if (!Ready()) return;
+    // Jong: its overlay, Ready() or not
 
     show_url = pchURL;
     ShowOverlay(true);
@@ -2655,7 +2660,6 @@ void Steam_Overlay::SetLobbyInvite(Friend friendId, uint64 lobbyId)
 {
     PRINT_DEBUG("%" PRIu64 " %llu", friendId.id(), lobbyId);
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
-    if (!Ready()) return;
 
     auto i = friends.find(friendId);
     if (i != friends.end())
@@ -2666,6 +2670,7 @@ void Steam_Overlay::SetLobbyInvite(Friend friendId, uint64 lobbyId)
         // Make sure don't have rich presence invite and a lobby invite (it should not happen but who knows)
         frd.window_state &= ~window_state_rich_invite;
         jong_invite_in(i->first);
+        if (!Ready()) return;  // Jong shows it; ours needs the graphics hook
         add_invite_notification(*i);
         notify_sound_user_invite(i->second);
     }
@@ -2675,7 +2680,6 @@ void Steam_Overlay::SetRichInvite(Friend friendId, const char* connect_str)
 {
     PRINT_DEBUG("%" PRIu64 " '%s'", friendId.id(), connect_str);
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
-    if (!Ready()) return;
 
     auto i = friends.find(friendId);
     if (i != friends.end())
@@ -2686,6 +2690,7 @@ void Steam_Overlay::SetRichInvite(Friend friendId, const char* connect_str)
         // Make sure don't have rich presence invite and a lobby invite (it should not happen but who knows)
         frd.window_state &= ~window_state_lobby_invite;
         jong_invite_in(i->first);
+        if (!Ready()) return;  // Jong shows it; ours needs the graphics hook
         add_invite_notification(*i);
         notify_sound_user_invite(i->second);
     }

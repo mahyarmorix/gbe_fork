@@ -222,6 +222,9 @@ bool Steam_Utils::IsOverlayEnabled()
     PRINT_DEBUG_ENTRY();
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     if (overlay->Ready()) return true;
+    // Jong: the overlay is Jong's own window (jong_pipe), so this one is never Ready(); a game that checks first
+    // (Shift At Midnight's «Invite Friends») would think there's none and not open the invite dialog at all
+    else if (!settings->disable_overlay) return true;
     else if (settings->auto_send_any_overlay_invites || settings->overlayAutoSendInvitesCount() > 0) return true;
 
     return false;

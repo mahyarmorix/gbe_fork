@@ -1,0 +1,94 @@
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include "pn_dns.h"
+#include "detours/detours.h" // Jong: Goldberg's Detours in place of MinHook
+#include <algorithm>
+#include <cctype>
+#include <mutex>
+#include <set>
+
+extern void ReFixLog(const char* fmt, ...);
+
+namespace PnDns {
+
+namespace {
+
+std::string g_target = "127.0.0.1";
+std::wstring g_targetW = L"127.0.0.1";
+
+typedef int (WSAAPI* fn_getaddrinfo_t)(PCSTR, PCSTR, const ADDRINFOA*, PADDRINFOA*);
+typedef int (WSAAPI* fn_GetAddrInfoW_t)(PCWSTR, PCWSTR, const ADDRINFOW*, PADDRINFOW*);
+typedef hostent* (WSAAPI* fn_gethostbyname_t)(const char*);
+
+fn_getaddrinfo_t g_origGetAddrInfo = nullptr;
+fn_GetAddrInfoW_t g_origGetAddrInfoW = nullptr;
+fn_gethostbyname_t g_origGetHostByName = nullptr;
+std::vector<std::string> g_suffixes;
+std::mutex g_logMutex;
+std::set<std::string> g_logged;
+
+bool Matches(std::string host) {
+    std::transform(host.begin(), host.end(), host.begin(), [](unsigned char c) { return (char)tolower(c); });
+    for (const auto& suffix : g_suffixes) {
+        if (host.size() >= suffix.size() && host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            std::lock_guard<std::mutex> lock(g_logMutex);
+            if (g_logged.insert(host).second) ReFixLog("[Photon-DNS] %s -> %s (local emulator)", host.c_str(), g_target.c_str());
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string Narrow(PCWSTR w) {
+    std::string s;
+    for (; w && *w; w++) s += (char)(*w < 128 ? *w : '?');
+    return s;
+}
+
+int WSAAPI Hooked_getaddrinfo(PCSTR node, PCSTR service, const ADDRINFOA* hints, PADDRINFOA* result) {
+    if (node && Matches(node)) node = g_target.c_str();
+    return g_origGetAddrInfo(node, service, hints, result);
+}
+
+int WSAAPI Hooked_GetAddrInfoW(PCWSTR node, PCWSTR service, const ADDRINFOW* hints, PADDRINFOW* result) {
+    if (node && Matches(Narrow(node))) node = g_targetW.c_str();
+    return g_origGetAddrInfoW(node, service, hints, result);
+}
+
+hostent* WSAAPI Hooked_gethostbyname(const char* name) {
+    if (name && Matches(name)) name = g_target.c_str();
+    return g_origGetHostByName(name);
+}
+
+bool Hook(HMODULE ws2, const char* name, void* detour, void** original) {
+    void* target = (void*)GetProcAddress(ws2, name);
+    if (!target) return false;
+    *original = target;
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(original, detour);
+    return DetourTransactionCommit() == NO_ERROR;
+}
+
+} // namespace
+
+bool Install(const std::vector<std::string>& hostSuffixes, const std::string& target) {
+    g_target = target;
+    g_targetW.assign(target.begin(), target.end());
+    g_suffixes.clear();
+    for (std::string s : hostSuffixes) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)tolower(c); });
+        if (!s.empty()) g_suffixes.push_back(s);
+    }
+    HMODULE ws2 = LoadLibraryA("ws2_32.dll");
+    if (!ws2) return false;
+    bool a = Hook(ws2, "getaddrinfo", (void*)&Hooked_getaddrinfo, (void**)&g_origGetAddrInfo);
+    bool w = Hook(ws2, "GetAddrInfoW", (void*)&Hooked_GetAddrInfoW, (void**)&g_origGetAddrInfoW);
+    bool h = Hook(ws2, "gethostbyname", (void*)&Hooked_gethostbyname, (void**)&g_origGetHostByName);
+    ReFixLog("[Photon-DNS] Hooks getaddrinfo=%d GetAddrInfoW=%d gethostbyname=%d for %zu suffix(es)", a, w, h, g_suffixes.size());
+    return a || w || h;
+}
+
+} // namespace PnDns

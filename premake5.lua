@@ -996,6 +996,10 @@ project "api_experimental"
             table_postfix_items(arm_deps_overlay_include, '/**.hxx'),
             table_postfix_items(arm_deps_overlay_include, '/**.hpp'),
         }
+    -- Jong: ReFix's Photon emulator (refix/), Windows only
+    filter { "system:windows", }
+        defines { "JONG_PHOTON" }
+        files { "refix/**" }
     -- Windows common source files
     filter { "system:windows", }
         removefiles {

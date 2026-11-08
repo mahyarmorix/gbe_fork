@@ -17,6 +17,9 @@
 
 #define STEAM_API_FUNCTIONS_IMPL
 #include "dll/dll.h"
+#ifdef JONG_PHOTON
+    #include "../refix/jong_refix.h"
+#endif
 #include "dll/settings_parser.h"
 #include "dll/client_known_interfaces.h"
 #include "dll/capicmcallback.h"
@@ -422,6 +425,9 @@ STEAMAPI_API steam_bool S_CALLTYPE SteamAPI_Init()
 
 #if defined(EMU_EXPERIMENTAL_BUILD) && defined(__WINDOWS__)
     crack_SteamAPI_Init();
+#endif
+#ifdef JONG_PHOTON
+    jong_photon_init(); // ReFix's Photon emulator (refix/)
 #endif
 
     user_steam_pipe = client->CreateSteamPipe();

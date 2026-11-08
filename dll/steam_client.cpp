@@ -18,6 +18,9 @@
 #include "dll/steam_client.h"
 #include "dll/settings_parser.h"
 #include "dll/dll.h"
+#ifdef JONG_PHOTON
+    #include "../refix/jong_refix.h"
+#endif
 
 
 // Returns true if the game window is the currently focused foreground window.
@@ -1030,6 +1033,10 @@ void Steam_Client::RunCallbacks(bool runClientCB, bool runGameserverCB)
 
     // PRINT_DEBUG("network *********");
     network->Run(); // networking must run first since it receives messages use by each run_callback()
+
+#ifdef JONG_PHOTON
+    jong_photon_service(); // the Photon emulator's friends/presence reads, on the game's thread
+#endif
 
     // PRINT_DEBUG("steam_matchmaking_servers *********");
     steam_matchmaking_servers->RunCallbacks();

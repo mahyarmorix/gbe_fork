@@ -429,6 +429,19 @@ STEAMAPI_API steam_bool S_CALLTYPE SteamAPI_Init()
 #ifdef JONG_PHOTON
     jong_photon_init(); // ReFix's Photon emulator (refix/)
 #endif
+#if defined(__WINDOWS__)
+    // Jong: Nemirtingas' PlayFab emulator, when a game has it beside us (Bogos Binted logs in to PlayFab with a Steam
+    // ticket, which PlayFab refuses for ours: «UNAUTHORIZED»). It hooks WinHttp when loaded; nothing loads it otherwise
+    {
+        std::string dir = get_full_lib_path();
+        dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+        std::wstring pf = utf8_decode(dir + "NemirtingasPlayFabEmu.dll");
+        if (GetFileAttributesW(pf.c_str()) != INVALID_FILE_ATTRIBUTES && !GetModuleHandleW(L"NemirtingasPlayFabEmu.dll")) {
+            HMODULE m = LoadLibraryW(pf.c_str());
+            PRINT_DEBUG("Jong: NemirtingasPlayFabEmu.dll %s", m ? "loaded" : "failed to load");
+        }
+    }
+#endif
 
     user_steam_pipe = client->CreateSteamPipe();
     client->ConnectToGlobalUser(user_steam_pipe);

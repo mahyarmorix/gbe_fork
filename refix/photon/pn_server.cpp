@@ -137,7 +137,26 @@ void Emulator::PublishLobbyRoom(const std::string& name, const Table* props) {
     }
 }
 
+static const char* const kRoleNames[] = { "NameServer", "Master", "Game" };
+
+// Jong: what a NameServer / Master op carried (code=value; a long or unknown one: its type and size), so a game that
+// stops after one (Mimic Party after AuthenticateOnce) shows what it asked for
+static std::string Describe(const Params& params) {
+    std::string s;
+    char b[96];
+    for (const auto& [code, raw] : params) {
+        int64_t n;
+        std::string t;
+        if (AsInt(raw, n)) snprintf(b, sizeof b, " %u=%lld", code, (long long)n);
+        else if (AsString(raw, t)) snprintf(b, sizeof b, " %u='%.40s'", code, t.c_str());
+        else snprintf(b, sizeof b, " %u=<type %u, %zu bytes>", code, raw.empty() ? 0u : (unsigned)(uint8_t)raw[0], raw.size());
+        s += b;
+    }
+    return s;
+}
+
 void Emulator::OnConnect(uint64_t peerKey, Role role, const std::string& userId, SendFn send) {
+    if (!m_peers.count(peerKey)) m_env.log("[Photon] %s: a client connected", kRoleNames[(int)role]);  // Jong
     Peer peer;
     peer.role = role;
     peer.userId = userId;
@@ -146,6 +165,8 @@ void Emulator::OnConnect(uint64_t peerKey, Role role, const std::string& userId,
 }
 
 void Emulator::OnDisconnect(uint64_t peerKey) {
+    auto it = m_peers.find(peerKey);
+    if (it != m_peers.end()) m_env.log("[Photon] %s: a client left", kRoleNames[(int)it->second.role]);  // Jong
     LeaveRoom(peerKey, false);
     m_peers.erase(peerKey);
 }
@@ -204,8 +225,8 @@ void Emulator::HandleInternal(Peer& peer, uint8_t op, const Params& params) {
 
 void Emulator::HandleOperation(Peer& peer, uint64_t key, uint8_t op, const Params& params, bool reliable, uint8_t channel) {
     if (peer.role != Role::Game || (op != OP_RAISE_EVENT && op != OP_SET_PROPERTIES)) {
-        static const char* const kRoleNames[] = { "NameServer", "Master", "Game" };
-        m_env.log("[Photon] %s op %u from %s (%zu params)", kRoleNames[(int)peer.role], op, peer.userId.c_str(), params.size());
+        m_env.log("[Photon] %s op %u from %s (%zu params)%s", kRoleNames[(int)peer.role], op, peer.userId.c_str(), params.size(),
+                  peer.role != Role::Game ? Describe(params).c_str() : "");  // Jong: the params too
     }
     switch (peer.role) {
         case Role::NameServer: HandleNameServer(peer, op, params); break;

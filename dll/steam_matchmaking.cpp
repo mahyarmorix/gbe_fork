@@ -16,6 +16,9 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "dll/steam_matchmaking.h"
+#ifdef JONG_PHOTON
+    #include "dll/dll.h"
+#endif
 
 #define SEND_LOBBY_RATE 5.0
 
@@ -54,6 +57,19 @@ Lobby* Steam_Matchmaking::get_lobby(CSteamID id)
 
     return &(*lobby);
 }
+
+uint64 Steam_Matchmaking::jong_active_lobby()
+{
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    for (auto &l : lobbies) {
+        if (!l.deleted() && get_lobby_member(&l, settings->get_local_steam_id())) return l.room_id();
+    }
+    return 0;
+}
+
+#ifdef JONG_PHOTON
+uint64_t jong_active_lobby() { return get_steam_client()->steam_matchmaking->jong_active_lobby(); }
+#endif
 
 void Steam_Matchmaking::send_lobby_data()
 {

@@ -5,3 +5,5 @@
 // next to the game's exe turns it off for that game.
 void jong_photon_init();     // after SteamAPI_Init
 void jong_photon_service();  // on the game's thread, from RunCallbacks
+#include <cstdint>
+uint64_t jong_active_lobby(); // the Goldberg lobby the player is in (dll/steam_matchmaking.cpp)

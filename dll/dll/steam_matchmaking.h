@@ -124,6 +124,8 @@ public ISteamMatchmaking
     static void steam_matchmaking_run_every_runcb(void *object);
 
 public:
+    // Jong: the lobby the local user is in (0: none), for the Photon emulator (refix/): its owner hosts the room
+    uint64 jong_active_lobby();
     Steam_Matchmaking(class Settings *settings, class Local_Storage *local_storage, class Networking *network, class SteamCallResults *callback_results, class SteamCallBacks *callbacks, class RunEveryRunCB *run_every_runcb);
     ~Steam_Matchmaking();
 

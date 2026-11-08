@@ -51,7 +51,7 @@ void PnEnetConnection::OnDatagram(const uint8_t* data, size_t size, uint32_t now
     uint8_t count = data[3];
     int32_t sentTime = BE32(data + 4);
     int32_t challenge = BE32(data + 8);
-    if (flags == kFlagEncrypted) return; // datagram encryption is not offered by this emulator
+    if (flags == kFlagEncrypted) { droppedEncrypted++; return; } // datagram encryption is not offered by this emulator
     size_t offset = kHeaderSize + (flags == kFlagCrc ? 4 : 0);
     if (m_connected && challenge != m_challenge) return;
     if (!m_connected) m_challenge = challenge;

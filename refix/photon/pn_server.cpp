@@ -200,6 +200,13 @@ void Emulator::OnMessage(uint64_t peerKey, const std::string& message, bool reli
             peer.appId = appId.substr(0, appId.find('\0'));
         }
         peer.send(Message(MT_INIT_RESPONSE, std::string(1, '\0')), true, 0);
+        // Jong: AuthenticateOnce's token rides in the Init (custom init data after the AppId) on the Master / Game
+        // servers, and the client then waits for the server's Authenticate answer instead of sending one (Fusion:
+        // Mimic Party sat silent on the Master). Auth-mode clients send no token there and ask with op 230 themselves
+        if (peer.role != Role::NameServer && message.size() > kInitAppIdOffset + kInitAppIdSize) {
+            m_env.log("[Photon] %s: token in the Init, authenticated", kRoleNames[(int)peer.role]);
+            Respond(peer, OP_AUTHENTICATE, 0, { { P_USER_ID, Str(peer.userId) } });
+        }
         return;
     }
     if (encrypted) {

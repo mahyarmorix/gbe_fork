@@ -766,6 +766,7 @@ void Pump() {
     for (auto it = g_connections.begin(); it != g_connections.end();) {
         it->second.enet->Tick(now);
         if (it->second.enet->IsClosed()) {
+            if (it->second.enet->droppedEncrypted) Log("[Photon] %u datagram-encrypted packets dropped (not emulated)", it->second.enet->droppedEncrypted);  // Jong
             g_emulator->OnDisconnect(it->first);
             it = g_connections.erase(it);
         } else {

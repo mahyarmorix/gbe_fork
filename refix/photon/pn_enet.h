@@ -28,6 +28,7 @@ public:
 
     bool IsConnected() const { return m_connected && !m_closed; }
     bool IsClosed() const { return m_closed; }
+    uint32_t droppedEncrypted = 0;  // Jong: datagram-encrypted ones dropped (logged when the connection closes)
     uint32_t LastReceiveMs() const { return m_lastReceiveMs; }
 
 private:

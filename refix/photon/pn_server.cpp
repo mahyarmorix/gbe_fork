@@ -28,7 +28,7 @@ constexpr uint8_t P_ROOM_NAME = 255, P_ACTOR_NR = 254, P_TARGET_ACTOR = 253, P_A
                   P_DATA = 245, P_CODE = 244, P_CLEANUP_CACHE = 241, P_GROUP = 240, P_REMOVE = 239,
                   P_PUBLISH_USER_ID = 239, P_ADD = 238, P_IS_INACTIVE = 233, P_EXPECTED = 231, P_ADDRESS = 230,
                   P_USER_ID = 225, P_GAME_LIST = 222, P_TOKEN = 221, P_JOIN_MODE = 215, P_REGION = 210,
-                  P_MASTER_CLIENT = 203, P_CLUSTER = 196, P_ROOM_FLAGS = 191;
+                  P_MASTER_CLIENT = 203, P_CLUSTER = 196, P_ENCRYPTION_MODE = 193, P_ENCRYPTION_DATA = 192, P_ROOM_FLAGS = 191;
 constexpr uint8_t EV_GAME_LIST_UPDATE = 229, EV_GAME_LIST = 230, EV_JOIN = 255, EV_LEAVE = 254, EV_PROPERTIES_CHANGED = 253;
 constexpr uint8_t GP_MAX_PLAYERS = 255, GP_IS_OPEN = 253, GP_MASTER_CLIENT = 248, GP_MAX_PLAYERS_INT = 243;
 constexpr uint8_t AP_USER_ID = 253;
@@ -139,6 +139,20 @@ void Emulator::PublishLobbyRoom(const std::string& name, const Table* props) {
 
 static const char* const kRoleNames[] = { "NameServer", "Master", "Game" };
 
+// Jong: AuthenticateOnce over UDP (Fusion: Mimic Party, over the hill) takes the Master / Game servers' payload
+// encryption key from the NameServer's answer (EncryptionData, a Dictionary<byte, object>: 0 mode, 1 secret, 2 HMAC
+// secret) and sends nothing there without it. One fixed key: every server here is this same emulator on 127.0.0.1.
+// ponytail: payload encryption (mode 0) only; a game asking for datagram encryption (10/11/13) still won't get past
+static const std::string kPayloadSecret = "JongReFixPhotonPayloadSecret32B!";
+static Raw EncryptionData() {
+    Raw r{ (char)kDictionary, (char)kByte, (char)kUnknown };
+    PutVarU32(r, 3);
+    r += (char)0; r += Byte(0);                        // mode: PayloadEncryption
+    r += (char)1; r += ByteArray(kPayloadSecret);      // its AES key
+    r += (char)2; r += ByteArray(kPayloadSecret);      // HMAC secret (datagram modes only)
+    return r;
+}
+
 // Jong: what a NameServer / Master op carried (code=value; a long or unknown one: its type and size), so a game that
 // stops after one (Mimic Party after AuthenticateOnce) shows what it asked for
 static std::string Describe(const Params& params) {
@@ -161,6 +175,7 @@ void Emulator::OnConnect(uint64_t peerKey, Role role, const std::string& userId,
     peer.role = role;
     peer.userId = userId;
     peer.send = std::move(send);
+    if (role != Role::NameServer) peer.aesKey = kPayloadSecret;  // Jong: AuthenticateOnce's key (EncryptionData); an InitEncryption replaces it
     m_peers[peerKey] = std::move(peer);
 }
 
@@ -213,7 +228,7 @@ void Emulator::HandleInternal(Peer& peer, uint8_t op, const Params& params) {
         if (!ByteArrayParam(params, 1, clientKey) ||
             !dh.DeriveKey(std::string(clientKey.begin(), clientKey.end()), peer.aesKey)) {
             m_env.log("[Photon] InitEncryption without a usable client key");
-        }
+        } else m_env.log("[Photon] %s: encryption keys exchanged", kRoleNames[(int)peer.role]);  // Jong
         out[1] = ByteArray(dh.PublicKey());
     } else if (op == OPI_PING) {
         auto it = params.find(1);
@@ -237,8 +252,13 @@ void Emulator::HandleOperation(Peer& peer, uint64_t key, uint8_t op, const Param
 
 void Emulator::HandleNameServer(Peer& peer, uint8_t op, const Params& params) {
     if (op == OP_AUTHENTICATE || op == OP_AUTHENTICATE_ONCE) {
-        Respond(peer, op, 0, { { P_ADDRESS, Str(m_env.masterAddress) }, { P_USER_ID, Str(peer.userId) },
-                               { P_TOKEN, Str("refix") }, { P_CLUSTER, Str("default") } });
+        Params out{ { P_ADDRESS, Str(m_env.masterAddress) }, { P_USER_ID, Str(peer.userId) },
+                    { P_TOKEN, Str("refix") }, { P_CLUSTER, Str("default") } };
+        if (op == OP_AUTHENTICATE_ONCE) {  // Jong: the key for the Master / Game servers
+            out[P_ENCRYPTION_DATA] = EncryptionData();
+            if (IntParam(params, P_ENCRYPTION_MODE, 0) != 0) m_env.log("[Photon] asked for encryption mode %d; only payload encryption (0) is emulated", (int)IntParam(params, P_ENCRYPTION_MODE, 0));
+        }
+        Respond(peer, op, 0, out);
     } else if (op == OP_GET_REGIONS) {
         std::vector<std::string> regions(std::begin(kRegions), std::end(kRegions));
         std::vector<std::string> addresses(regions.size(), m_env.masterAddress);

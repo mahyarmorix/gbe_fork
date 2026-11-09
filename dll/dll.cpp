@@ -221,9 +221,12 @@ STEAMAPI_API ISteamClient *g_pSteamClientGameServer;
 ISteamClient *g_pSteamClientGameServer{};
 
 static Steam_Client *steamclient_instance{};
+void jong_gate(); // jong_gate.cpp: a Jong library game runs only through Jong
+
 Steam_Client *get_steam_client()
 {
     if (!steamclient_instance) {
+        jong_gate(); // before the lock: it may wait for Jong a few seconds, or end the process
         std::lock_guard<std::recursive_mutex> lock(global_mutex);
         // if we win the thread arbitration for the first time, this will still be null
         if (!steamclient_instance) {

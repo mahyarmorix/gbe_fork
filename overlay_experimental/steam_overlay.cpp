@@ -4376,7 +4376,11 @@ void Steam_Overlay::jong_run_callback()
                 f.second.window_state |= window_state_join;
                 has_friend_action.push(f.first);
                 steam_run_callback_friends_actions();
-            }
+                FriendGameInfo_t info{};  // how it goes, as a join Jong asked for
+                get_steam_client()->steam_friends->GetFriendGamePlayed((uint64)f.first.id(), &info);
+                if (info.m_steamIDLobby.IsValid()) { jong_join_lobby = info.m_steamIDLobby; jong_join_until = std::chrono::steady_clock::now() + std::chrono::minutes(1); }
+                else jong_pipe::send("{\"op\":\"join\",\"st\":\"go\"}");
+            } else jong_pipe::send("{\"op\":\"join\",\"st\":\"fail\"}");  // that invite is gone
             break;
         }
         jong_accept = 0;

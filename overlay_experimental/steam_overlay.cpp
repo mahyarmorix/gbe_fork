@@ -4338,7 +4338,8 @@ void Steam_Overlay::render_pinned_screenshot()
 
 // -- Jong (jong_pipe) --
 // its overlay opened / closed: the game is told as it would be by Steam's (it pauses, frees the mouse...).
-// {"ev":"invite"|"join","name":"..."}: invite that friend to the game (our lobby / connect string), or join theirs.
+// {"ev":"invite"|"join","name":"..."}: invite that friend to the game (our lobby / connect string), or join theirs;
+// a join's outcome goes back as {"op":"join","st":"in"|"go"|"fail"}.
 // The friend is found by its name (Jong puts the member's Jong name in configs.user.ini) once it is on the LAN
 void Steam_Overlay::jong_run_callback()
 {
@@ -4382,8 +4383,23 @@ void Steam_Overlay::jong_run_callback()
         overlay_mutex.unlock();
     }
 
+    // the join Jong asked for: in that lobby, or not within a minute (Jong lets the member accept another invite then)
+    if (jong_join_lobby.IsValid()) {
+        Steam_Matchmaking* mm = get_steam_client()->steam_matchmaking;
+        CSteamID me = settings->get_local_steam_id();
+        bool in = false;
+        for (int i = 0, n = mm->GetNumLobbyMembers(jong_join_lobby); i < n && !in; ++i) in = mm->GetLobbyMemberByIndex(jong_join_lobby, i) == me;
+        if (in || std::chrono::steady_clock::now() > jong_join_until) {
+            jong_pipe::send(in ? "{\"op\":\"join\",\"st\":\"in\"}" : "{\"op\":\"join\",\"st\":\"fail\"}");
+            jong_join_lobby = CSteamID();
+        }
+    }
+
     if (jong_want.empty()) return;
-    if (jong_name.empty() || std::chrono::steady_clock::now() > jong_until) { jong_want.clear(); return; }
+    if (jong_name.empty() || std::chrono::steady_clock::now() > jong_until) {
+        if (jong_want == "join") jong_pipe::send("{\"op\":\"join\",\"st\":\"fail\"}");  // that friend never showed up on the LAN
+        jong_want.clear(); return;
+    }
     if (!overlay_mutex.try_lock()) return;  // as steam_run_callback(): never wait for it here
 
     Steam_Friends* steamFriends = get_steam_client()->steam_friends;
@@ -4403,6 +4419,8 @@ void Steam_Overlay::jong_run_callback()
             f.second.window_state |= window_state_join;  // as the overlay's «Join»
             has_friend_action.push(f.first);
             steam_run_callback_friends_actions();
+            if (info.m_steamIDLobby.IsValid()) { jong_join_lobby = info.m_steamIDLobby; jong_join_until = std::chrono::steady_clock::now() + std::chrono::minutes(1); }
+            else jong_pipe::send("{\"op\":\"join\",\"st\":\"go\"}");  // a connect string: the game connects by itself
         }
         PRINT_DEBUG("Jong %s '%s' (%" PRIu64 ")", jong_want.c_str(), jong_name.c_str(), friend_id);
         jong_want.clear();

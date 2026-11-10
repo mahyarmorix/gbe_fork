@@ -187,6 +187,9 @@ class Steam_Overlay
     std::string jong_want{}, jong_name{};
     std::chrono::steady_clock::time_point jong_until{};
     uint64 jong_accept = 0;  // a friend's invite Jong's notification accepted (their steam id)
+    // a join of a friend's lobby that Jong asked for, until we're in it (or it fails): Jong is told how it went ({"op":"join","st"})
+    CSteamID jong_join_lobby{};
+    std::chrono::steady_clock::time_point jong_join_until{};
 
     std::atomic<bool> i_have_lobby = false;
 

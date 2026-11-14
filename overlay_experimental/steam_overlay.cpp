@@ -283,11 +283,28 @@ Steam_Overlay::~Steam_Overlay()
     this->run_every_runcb->remove(&Steam_Overlay::overlay_run_callback, this);
 }
 
+// the one graphics library the game uses, by what it loaded (DX12 before DX11: a DX12 game loads d3d11.dll too); 0: none yet
+static unsigned jong_game_renderer()
+{
+#ifdef __WINDOWS__
+    using T = InGameOverlay::RendererHookType_t;
+    if (GetModuleHandleW(L"d3d12.dll")) return (unsigned)T::DirectX12;
+    if (GetModuleHandleW(L"vulkan-1.dll")) return (unsigned)T::Vulkan;
+    if (GetModuleHandleW(L"d3d11.dll")) return (unsigned)T::DirectX11;
+    if (GetModuleHandleW(L"d3d10.dll") || GetModuleHandleW(L"d3d10_1.dll")) return (unsigned)T::DirectX10;
+    if (GetModuleHandleW(L"d3d9.dll")) return (unsigned)T::DirectX9;
+    if (GetModuleHandleW(L"opengl32.dll")) return (unsigned)T::OpenGL;
+#endif
+    return 0;
+}
+
 void Steam_Overlay::request_renderer_detector()
 {
     PRINT_DEBUG_ENTRY();
-    // request renderer detection
-    InGameOverlay::DetectRenderer();
+    // request renderer detection: Jong's, only the graphics the game loaded (never probing the others)
+    jong_types = jong_game_renderer();
+    if (!jong_types) { PRINT_DEBUG("Jong: no graphics library loaded yet"); return; }
+    InGameOverlay::DetectRenderer(false, (InGameOverlay::RendererHookType_t)jong_types);
 }
 
 void Steam_Overlay::cleanup_renderer_hook()
@@ -300,12 +317,18 @@ bool Steam_Overlay::renderer_hook_proc()
 {
     auto expiration_time = std::chrono::steady_clock::now() + std::chrono::seconds(settings->overlay_renderer_detector_timeout_sec);
 
-    while (std::chrono::steady_clock::now() < expiration_time && InGameOverlay::DetectRenderer()) {
+    if (!jong_types) {  // the game had no graphics library loaded by now: not hooked (Jong keeps its window overlay)
+        jong_pipe::send("{\"op\":\"ingame\",\"st\":\"none\"}");
+        return true;
+    }
+    const auto types = (InGameOverlay::RendererHookType_t)jong_types;
+    while (std::chrono::steady_clock::now() < expiration_time && InGameOverlay::DetectRenderer(false, types)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
     // exit on failure
-    bool final_chance = InGameOverlay::DetectRenderer();
+    bool final_chance = InGameOverlay::DetectRenderer(false, types);
+    if (final_chance) jong_pipe::send("{\"op\":\"ingame\",\"st\":\"none\"}");
     // again check for 'setup_overlay_called' to be extra sure that the overlay wasn't deinitialized
     if (!setup_overlay_called || final_chance) {
         PRINT_DEBUG("failed to detect renderer, overlay was set up=%i",
@@ -593,6 +616,10 @@ void Steam_Overlay::overlay_state_hook(bool ready)
     if (!setup_overlay_called) return;
 
     is_ready = ready;
+    if (jong_ingame && _renderer) {
+        nlohmann::json j{ { "op", "ingame" }, { "st", ready ? "ready" : "lost" }, { "api", _renderer->GetLibraryName() } };
+        jong_pipe::send(j.dump());
+    }
 
     if (ready) {
         // Antichamber may crash here because ImGui Context is null!, no idea why
@@ -1685,6 +1712,7 @@ void Steam_Overlay::overlay_render_proc()
     std::lock_guard lock(overlay_mutex);
 
     if (!Ready()) return;
+    if (jong_ingame) { jong_ingame_draw(); return; }  // Jong's overlay in the game: its page only (Jong shows its own notifications)
 
     // Process achievement queue to show scheduled notifications
     process_achievement_queue();
@@ -2474,10 +2502,16 @@ void Steam_Overlay::SetupOverlay()
     PRINT_DEBUG_ENTRY();
     std::lock_guard<std::recursive_mutex> lock(overlay_mutex);
 
-    // Jong: its overlay is Jong's own window (jong_pipe), this one is never drawn, so the game's graphics are never hooked
-    // (the renderer detector made a game crash in d3d11.dll on some PCs). Invites, joins and «open the overlay» go
-    // through the pipe without it; the ImGui parts below stay as they were, not Ready()
-    return;
+    // Jong: the game's graphics are hooked only for Jong's overlay drawn in the game (JONG_INGAME=1, Settings in Jong), and
+    // then safely: late (15 s in at least: the game's own renderer up), and only the graphics library the game itself loaded
+    // (the detector trying them all made a DX12 game crash in d3d11.dll on some PCs, Fart Together). Otherwise its overlay
+    // is Jong's own window (jong_pipe): invites, joins and «open the overlay» go through the pipe without this
+#ifdef __WINDOWS__
+    { char v[8] = ""; jong_ingame = GetEnvironmentVariableA("JONG_INGAME", v, sizeof(v)) > 0 && v[0] == '1'; }
+#endif
+    if (!jong_ingame) return;
+    if (settings->overlay_hook_delay_sec < 15) settings->overlay_hook_delay_sec = 15;
+    if (settings->overlay_renderer_detector_timeout_sec < 20) settings->overlay_renderer_detector_timeout_sec = 20;
 
     bool not_called_yet = false;
     if (setup_overlay_called.compare_exchange_weak(not_called_yet, true)) {
@@ -2548,6 +2582,8 @@ void Steam_Overlay::UnSetupOverlay()
                 preview_texture = nullptr;
             }
             unpin_all_screenshots();
+            if (jong_tex) { if (jong_tex->GetResourceId() != 0) jong_tex->Unload(); jong_tex->Delete(); jong_tex = nullptr; }
+            jong_map_close();
 
             // manually calling this dtor looks bad, but it actually prevents a lot of crashes on exit, don't remove it!
             // many DX12 games will crash on exit if the hook wasn't manually removed (ex appid 2933080, 1583230)
@@ -4390,6 +4426,10 @@ void Steam_Overlay::jong_run_callback()
             }), jong_wants.end());
             if (jong_wants.size() >= 16) jong_wants.pop_front();
             jong_wants.push_back(w);
+        } else if ((ev == "ov" || ev == "ovshow") && jong_ingame) {  // Jong's overlay in the game: its frames, shown / hidden
+            std::lock_guard lock(overlay_mutex);
+            if (ev == "ov") jong_map_open(j.value("file", std::string()));
+            else jong_want_show = j.value("on", false);
         } else if (ev == "peers" && j.contains("ips") && j["ips"].is_array()) {
             std::vector<uint32_t> ips{};
             for (auto &x : j["ips"]) {
@@ -4403,6 +4443,17 @@ void Steam_Overlay::jong_run_callback()
     }
 
     Steam_Matchmaking* mm = get_steam_client()->steam_matchmaking;
+
+    // Jong's overlay in the game shown / hidden as Jong asked, once the hook is ready (it may ask before)
+    if (jong_ingame && jong_want_show != jong_show && overlay_mutex.try_lock()) {
+        if (Ready()) {
+            jong_show = jong_want_show;
+            allow_renderer_frame_processing(jong_show);
+            obscure_game_input(jong_show);
+            jong_mx = jong_my = -1;
+        }
+        overlay_mutex.unlock();
+    }
 
     // our lobby, for Jong's backend: when it changes, and every 30 s (Jong may have restarted)
     if (now >= jong_lobby_at) {
@@ -4513,6 +4564,123 @@ void Steam_Overlay::jong_run_callback()
     }
 
     overlay_mutex.unlock();
+}
+
+// ---- Jong's overlay drawn in the game: its page (an offscreen window in Jong) comes as frames in a file Jong writes and
+// we map: a header (magic 'JOV1', the frame's number, width, height) then its pixels (BGRA, premultiplied: Chromium's).
+// Each new frame becomes the texture drawn over the whole game (the old one stays until the new one is up); while it's
+// shown the game gets no input (InGameOverlay's), and the mouse / keyboard go to Jong ({"op":"in"}), which hands them to
+// the page
+static constexpr uint32_t JONG_MAGIC = 0x31564F4A;  // "JOV1"
+void Steam_Overlay::jong_map_close()
+{
+#ifdef __WINDOWS__
+    if (jong_view) UnmapViewOfFile(jong_view);
+    if (jong_map) CloseHandle((HANDLE)jong_map);
+    if (jong_file && jong_file != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)jong_file);
+#endif
+    jong_view = jong_map = jong_file = nullptr; jong_map_size = 0; jong_seq = 0;
+}
+void Steam_Overlay::jong_map_open(const std::string &path)
+{
+    jong_map_close();
+#ifdef __WINDOWS__
+    std::wstring w(path.size() + 1, L'\0');
+    w.resize(MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), (int)w.size()) - 1);
+    HANDLE f = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) { PRINT_DEBUG("Jong: frames file not opened"); return; }
+    LARGE_INTEGER sz{}; GetFileSizeEx(f, &sz);
+    HANDLE m = sz.QuadPart > 16 ? CreateFileMappingW(f, NULL, PAGE_READONLY, 0, 0, NULL) : NULL;
+    void *v = m ? MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : nullptr;
+    if (!v) { if (m) CloseHandle(m); CloseHandle(f); return; }
+    jong_file = f; jong_map = m; jong_view = v; jong_map_size = (size_t)sz.QuadPart;
+#endif
+}
+
+void Steam_Overlay::jong_ingame_draw()
+{
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.DisplaySize.x != jong_w || io.DisplaySize.y != jong_h) {  // the size Jong's page is drawn at
+        jong_w = io.DisplaySize.x; jong_h = io.DisplaySize.y;
+        nlohmann::json j{ { "op", "ingame" }, { "st", "size" }, { "w", (int)jong_w }, { "h", (int)jong_h } };
+        jong_pipe::send(j.dump());
+    }
+    if (!jong_show) return;
+
+    // a new frame: copied (RGBA, straight alpha: what the texture wants) into the buffer not in use, then attached
+    if (jong_view && (!jong_tex || jong_tex->IsLoaded())) {
+        const volatile uint32_t *hd = (const volatile uint32_t *)jong_view;
+        uint32_t seq = hd[1], w = hd[2], h = hd[3];
+        if (hd[0] == JONG_MAGIC && seq != jong_seq && w && h && 16 + (size_t)w * h * 4 <= jong_map_size) {
+            auto &buf = jong_px[jong_px_i ^ 1];
+            buf.resize((size_t)w * h * 4);
+            const uint8_t *s = (const uint8_t *)jong_view + 16;
+            uint8_t *d = buf.data();
+            for (size_t i = 0, n = (size_t)w * h; i < n; ++i, s += 4, d += 4) {
+                unsigned b = s[0], g = s[1], r = s[2], a = s[3];
+                if (a && a < 255) { r = std::min(255u, r * 255 / a); g = std::min(255u, g * 255 / a); b = std::min(255u, b * 255 / a); }
+                d[0] = (uint8_t)r; d[1] = (uint8_t)g; d[2] = (uint8_t)b; d[3] = (uint8_t)a;
+            }
+            if (hd[1] == seq) {  // not rewritten while we read it (else the next frame)
+                jong_px_i ^= 1;
+                if (!jong_tex) jong_tex = _renderer->CreateAndAttachResource(buf.data(), w, h);
+                else jong_tex->AttachResource(buf.data(), w, h);
+                jong_seq = seq; jong_tw = w; jong_th = h;
+            }
+        }
+    }
+    if (jong_tex) {
+        auto id = jong_tex->GetResourceId();
+        if (id) {
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            if (ImGui::Begin("##jong", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing)) {
+                ImGui::Image(id, io.DisplaySize);
+            }
+            ImGui::End();
+            ImGui::PopStyleVar(2);
+        }
+    }
+
+    // the mouse and the keyboard, to Jong's page (in its pixels: the page is drawn at the game's size)
+    auto in = [](nlohmann::json j) { j["op"] = "in"; jong_pipe::send(j.dump()); };
+    const float kx = jong_tw && jong_w ? jong_tw / jong_w : 1.0f, ky = jong_th && jong_h ? jong_th / jong_h : 1.0f;
+    int mx = (int)(io.MousePos.x * kx), my = (int)(io.MousePos.y * ky);
+    if (ImGui::IsMousePosValid() && (io.MousePos.x != jong_mx || io.MousePos.y != jong_my)) {
+        jong_mx = io.MousePos.x; jong_my = io.MousePos.y;
+        in({ { "t", "mv" }, { "x", mx }, { "y", my } });
+    }
+    for (int b = 0; b < 3; ++b) {
+        if (ImGui::IsMouseClicked(b)) in({ { "t", "md" }, { "b", b }, { "x", mx }, { "y", my }, { "n", ImGui::IsMouseDoubleClicked(b) ? 2 : 1 } });
+        if (ImGui::IsMouseReleased(b)) in({ { "t", "mu" }, { "b", b }, { "x", mx }, { "y", my } });
+    }
+    if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) in({ { "t", "wh" }, { "dx", io.MouseWheelH }, { "dy", io.MouseWheel }, { "x", mx }, { "y", my } });
+    if (!io.InputQueueCharacters.empty()) {
+        std::string u{};
+        for (ImWchar c : io.InputQueueCharacters) {
+            if (c < 0x20 || c == 0x7f) continue;  // (Enter, Backspace…: as keys below)
+            unsigned cp = c;  // UTF-8 of it
+            if (cp < 0x80) u += (char)cp;
+            else if (cp < 0x800) { u += (char)(0xC0 | (cp >> 6)); u += (char)(0x80 | (cp & 0x3F)); }
+            else { u += (char)(0xE0 | (cp >> 12)); u += (char)(0x80 | ((cp >> 6) & 0x3F)); u += (char)(0x80 | (cp & 0x3F)); }
+        }
+        if (!u.empty()) in({ { "t", "ch" }, { "c", u } });
+    }
+    static const std::pair<ImGuiKey, const char *> keys[] = {
+        { ImGuiKey_Enter, "Enter" }, { ImGuiKey_KeypadEnter, "Enter" }, { ImGuiKey_Escape, "Escape" }, { ImGuiKey_Backspace, "Backspace" }, { ImGuiKey_Delete, "Delete" },
+        { ImGuiKey_Tab, "Tab" }, { ImGuiKey_LeftArrow, "Left" }, { ImGuiKey_RightArrow, "Right" }, { ImGuiKey_UpArrow, "Up" }, { ImGuiKey_DownArrow, "Down" },
+        { ImGuiKey_Home, "Home" }, { ImGuiKey_End, "End" }, { ImGuiKey_PageUp, "PageUp" }, { ImGuiKey_PageDown, "PageDown" },
+        { ImGuiKey_A, "A" }, { ImGuiKey_C, "C" }, { ImGuiKey_V, "V" }, { ImGuiKey_X, "X" }, { ImGuiKey_Z, "Z" }, { ImGuiKey_Y, "Y" } };
+    std::string mods{};
+    if (io.KeyCtrl) mods += "c"; if (io.KeyShift) mods += "s"; if (io.KeyAlt) mods += "a";
+    for (auto &k : keys) {
+        bool letter = k.second[1] == '\0';
+        if (letter && !io.KeyCtrl) continue;  // a letter alone is text (above); with Ctrl a shortcut (copy, paste…)
+        if (ImGui::IsKeyPressed(k.first, true)) in({ { "t", "kd" }, { "k", k.second }, { "m", mods } });
+        if (ImGui::IsKeyReleased(k.first)) in({ { "t", "ku" }, { "k", k.second }, { "m", mods } });
+    }
 }
 
 // a friend's invite came in: Jong shows its own notification over the game (a tap accepts it, {"ev":"accept","fid"})

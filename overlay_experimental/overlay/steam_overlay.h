@@ -192,6 +192,20 @@ class Steam_Overlay
     };
     std::deque<Jong_Want> jong_wants{};
     std::string jong_lobby_said{};  // the lobby last told to Jong ({"op":"lobby"}), and when
+    // Jong's own overlay drawn in the game, as Steam's (JONG_INGAME=1 from Jong): its page's frames from a file Jong writes
+    // ({"ev":"ov","file","w","h"}), shown / hidden by {"ev":"ovshow","on"}; while shown, the mouse and keyboard go to Jong
+    bool jong_ingame = false, jong_show = false, jong_want_show = false;
+    unsigned jong_types = 0;  // InGameOverlay::RendererHookType_t: only the graphics the game itself loaded
+    void *jong_file = nullptr, *jong_map = nullptr, *jong_view = nullptr;
+    size_t jong_map_size = 0;
+    uint32_t jong_seq = 0, jong_tw = 0, jong_th = 0;
+    std::vector<uint8_t> jong_px[2]{};
+    int jong_px_i = 0;
+    InGameOverlay::RendererResource_t *jong_tex = nullptr;
+    float jong_w = 0, jong_h = 0, jong_mx = -1, jong_my = -1;
+    void jong_map_open(const std::string &path);
+    void jong_map_close();
+    void jong_ingame_draw();
     std::chrono::steady_clock::time_point jong_lobby_at{};
     uint64 jong_accept = 0;  // a friend's invite Jong's notification accepted (their steam id)
     // a join of a friend's lobby that Jong asked for, until we're in it (or it fails): Jong is told how it went ({"op":"join","st"})

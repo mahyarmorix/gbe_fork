@@ -136,6 +136,8 @@ class Networking
 public:
     Networking(CSteamID id, uint32 appid, uint16 port, std::set<IP_PORT> *custom_broadcasts, bool disable_sockets);
     ~Networking();
+    // Jong: its room's members' addresses (host order), told while the game runs: announced to now and from then on
+    void jong_add_peers(const std::vector<uint32_t> &ips);
     
     //NOTE: for all functions ips/ports are passed/returned in host byte order
     //ex: 127.0.0.1 should be passed as 0x7F000001

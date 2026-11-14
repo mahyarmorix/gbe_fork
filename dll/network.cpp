@@ -887,6 +887,25 @@ Common_Message Networking::create_announce(bool request)
     return msg;
 }
 
+// custom_broadcasts.txt is read only at startup: a friend who joined the room after the game started was never looked
+// for (their lobby not seen, nor ours by them, till they restarted the game). Jong tells us the room's members as they come
+void Networking::jong_add_peers(const std::vector<uint32_t> &ips)
+{
+    bool added = false;
+    for (uint32_t ip : ips) {
+        IP_PORT a{};
+        a.ip = htonl(ip);
+        a.port = htons(udp_port);
+        if (!ip || std::any_of(custom_broadcasts.begin(), custom_broadcasts.end(), [&](const IP_PORT &x) { return x.ip == a.ip; })) continue;
+        if (custom_broadcasts.size() >= 64) break;
+        custom_broadcasts.push_back(a);
+        added = true;
+    }
+    if (!added || !enabled) return;
+    number_broadcasts = -1;  // the LAN whitelist made again, with them, on this send
+    send_announce_broadcasts();
+}
+
 void Networking::send_announce_broadcasts()
 {
     Common_Message msg = create_announce(true);

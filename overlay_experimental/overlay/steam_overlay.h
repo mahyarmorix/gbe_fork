@@ -182,10 +182,16 @@ class Steam_Overlay
     std::chrono::milliseconds last_scheduled_show_time{}; // tracks the last scheduled show time for spacing
 
     bool overlay_state_changed = false;
-    // Jong (jong_pipe): its overlay is up; the invite / join it asked for, until that friend shows up on the LAN
+    // Jong (jong_pipe): its overlay is up; the invites / joins it asked for, in turn, each until its friend (or lobby) shows up
     bool jong_active = false;
-    std::string jong_want{}, jong_name{};
-    std::chrono::steady_clock::time_point jong_until{};
+    struct Jong_Want {
+        std::string want{}, name{};  // "invite" / "join"; the friend's Jong name (an older Jong: no id)
+        uint64 id = 0, lobby = 0;    // the friend's steam id (Jong's: from their Jong number); the lobby to join (Jong's backend knows it)
+        std::chrono::steady_clock::time_point until{};
+    };
+    std::deque<Jong_Want> jong_wants{};
+    std::string jong_lobby_said{};  // the lobby last told to Jong ({"op":"lobby"}), and when
+    std::chrono::steady_clock::time_point jong_lobby_at{};
     uint64 jong_accept = 0;  // a friend's invite Jong's notification accepted (their steam id)
     // a join of a friend's lobby that Jong asked for, until we're in it (or it fails): Jong is told how it went ({"op":"join","st"})
     CSteamID jong_join_lobby{};

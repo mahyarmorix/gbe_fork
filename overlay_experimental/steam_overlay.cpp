@@ -4338,11 +4338,18 @@ void Steam_Overlay::render_pinned_screenshot()
 
 // -- Jong (jong_pipe) --
 // its overlay opened / closed: the game is told as it would be by Steam's (it pauses, frees the mouse...).
-// {"ev":"invite"|"join","name":"..."}: invite that friend to the game (our lobby / connect string), or join theirs;
-// a join's outcome goes back as {"op":"join","st":"in"|"go"|"fail"}.
-// The friend is found by its name (Jong puts the member's Jong name in configs.user.ini) once it is on the LAN
+// {"ev":"invite"|"join","id":"<steam id>","lobby":"<lobby id>","name":"..."}: invite that friend to the game (our lobby /
+// connect string), or join theirs. Jong's backend knows who is who (the id: from their Jong number) and which lobby they
+// are in, as Steam's does: a join with its lobby goes in as soon as that lobby reaches us, friend seen or not. An older
+// Jong sends only the name. They wait in turn, each up to 3 minutes; a join's outcome goes back as {"op":"join","st":"in"|"go"|"fail"}.
+// {"ev":"peers","ips":["10.77.0.1",...]}: the room's members, looked for from now on (not only those in custom_broadcasts.txt).
+// Our lobby goes to Jong as it changes ({"op":"lobby","id","owner","n","max"}; id "0": in none), for its backend.
 void Steam_Overlay::jong_run_callback()
 {
+    auto now = std::chrono::steady_clock::now();
+    auto u64 = [](const nlohmann::json &j, const char *k) -> uint64 {
+        try { return j.contains(k) && j[k].is_string() ? std::stoull(j[k].get<std::string>()) : 0; } catch (...) { return 0; }
+    };
     std::string line{};
     while (jong_pipe::poll(line)) {
         auto j = nlohmann::json::parse(line, nullptr, false);
@@ -4358,15 +4365,50 @@ void Steam_Overlay::jong_run_callback()
             data.m_dwOverlayPID = 123;
             data.m_nAppID = settings->get_local_game_id().AppID();
             callbacks->addCBResult(data.k_iCallback, &data, sizeof(data));
+            if (!on) jong_lobby_said.clear();  // (Jong went away: told again when it's back)
         } else if (ev == "accept") {
             // the member clicked Jong's notification of a friend's invite: as the overlay's «accept»
             // a string: a 64-bit Steam id doesn't fit a JavaScript number
-            try { jong_accept = std::stoull(j.value("fid", std::string("0"))); } catch (...) { jong_accept = 0; }
+            jong_accept = u64(j, "fid");
         } else if (ev == "invite" || ev == "join") {
-            jong_want = ev;
-            jong_name = j.value("name", std::string());
-            jong_until = std::chrono::steady_clock::now() + std::chrono::minutes(3);
+            Jong_Want w{};
+            w.want = ev;
+            w.name = j.value("name", std::string());
+            w.id = u64(j, "id");
+            w.lobby = ev == "join" ? u64(j, "lobby") : 0;
+            w.until = now + std::chrono::minutes(3);
+            if (!w.id && w.name.empty()) continue;
+            // one join at a time (the newest: the member changed their mind); an invite to the same friend once
+            jong_wants.erase(std::remove_if(jong_wants.begin(), jong_wants.end(), [&](const Jong_Want &x) {
+                return x.want == w.want && (w.want == "join" || (w.id ? x.id == w.id : x.name == w.name));
+            }), jong_wants.end());
+            if (jong_wants.size() >= 16) jong_wants.pop_front();
+            jong_wants.push_back(w);
+        } else if (ev == "peers" && j.contains("ips") && j["ips"].is_array()) {
+            std::vector<uint32_t> ips{};
+            for (auto &x : j["ips"]) {
+                unsigned a, b, c, d;
+                char tail;
+                if (x.is_string() && sscanf(x.get<std::string>().c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 && a < 256 && b < 256 && c < 256 && d < 256)
+                    ips.push_back((a << 24) | (b << 16) | (c << 8) | d);
+            }
+            if (ips.size() <= 64) network->jong_add_peers(ips);
         }
+    }
+
+    Steam_Matchmaking* mm = get_steam_client()->steam_matchmaking;
+
+    // our lobby, for Jong's backend: when it changes, and every 30 s (Jong may have restarted)
+    if (now >= jong_lobby_at) {
+        CSteamID l = settings->get_lobby();
+        nlohmann::json j{ { "op", "lobby" }, { "id", "0" } };
+        if (l.IsValid() && mm->GetLobbyOwner(l).IsValid())
+            j = { { "op", "lobby" }, { "id", std::to_string(l.ConvertToUint64()) }, { "owner", std::to_string(mm->GetLobbyOwner(l).ConvertToUint64()) },
+                  { "n", mm->GetNumLobbyMembers(l) }, { "max", mm->GetLobbyMemberLimit(l) } };
+        std::string d = j.dump();
+        static std::chrono::steady_clock::time_point said_at{};
+        if ((d != jong_lobby_said || now - said_at > std::chrono::seconds(30)) && jong_pipe::send(d)) { jong_lobby_said = d; said_at = now; }
+        jong_lobby_at = now + std::chrono::seconds(2);
     }
 
     if (jong_accept && overlay_mutex.try_lock()) {  // as steam_run_callback(): never wait for it here (else on the next run)
@@ -4378,7 +4420,7 @@ void Steam_Overlay::jong_run_callback()
                 steam_run_callback_friends_actions();
                 FriendGameInfo_t info{};  // how it goes, as a join Jong asked for
                 get_steam_client()->steam_friends->GetFriendGamePlayed((uint64)f.first.id(), &info);
-                if (info.m_steamIDLobby.IsValid()) { jong_join_lobby = info.m_steamIDLobby; jong_join_until = std::chrono::steady_clock::now() + std::chrono::minutes(1); }
+                if (info.m_steamIDLobby.IsValid()) { jong_join_lobby = info.m_steamIDLobby; jong_join_until = now + std::chrono::minutes(1); }
                 else jong_pipe::send("{\"op\":\"join\",\"st\":\"go\"}");
             } else jong_pipe::send("{\"op\":\"join\",\"st\":\"fail\"}");  // that invite is gone
             break;
@@ -4389,46 +4431,67 @@ void Steam_Overlay::jong_run_callback()
 
     // the join Jong asked for: in that lobby, or not within a minute (Jong lets the member accept another invite then)
     if (jong_join_lobby.IsValid()) {
-        Steam_Matchmaking* mm = get_steam_client()->steam_matchmaking;
         CSteamID me = settings->get_local_steam_id();
         bool in = false;
         for (int i = 0, n = mm->GetNumLobbyMembers(jong_join_lobby); i < n && !in; ++i) in = mm->GetLobbyMemberByIndex(jong_join_lobby, i) == me;
-        if (in || std::chrono::steady_clock::now() > jong_join_until) {
+        if (in || now > jong_join_until) {
             jong_pipe::send(in ? "{\"op\":\"join\",\"st\":\"in\"}" : "{\"op\":\"join\",\"st\":\"fail\"}");
             jong_join_lobby = CSteamID();
         }
     }
 
-    if (jong_want.empty()) return;
-    if (jong_name.empty() || std::chrono::steady_clock::now() > jong_until) {
-        if (jong_want == "join") jong_pipe::send("{\"op\":\"join\",\"st\":\"fail\"}");  // that friend never showed up on the LAN
-        jong_want.clear(); return;
+    // the waiting invites / joins, in turn: the first one whose friend (or lobby) is here goes; the expired ones drop
+    for (auto it = jong_wants.begin(); it != jong_wants.end(); ) {
+        if (now > it->until) {
+            if (it->want == "join") jong_pipe::send("{\"op\":\"join\",\"st\":\"fail\"}");  // that friend / lobby never showed up on the LAN
+            it = jong_wants.erase(it);
+        } else ++it;
+    }
+    if (jong_wants.empty()) return;
+    // a join whose lobby we already know (Jong's backend said which): straight in, as Steam's «Join game», friend seen or not
+    for (auto it = jong_wants.begin(); it != jong_wants.end(); ++it) {
+        if (it->want != "join" || !it->lobby) continue;
+        CSteamID l((uint64)it->lobby), owner = mm->GetLobbyOwner(l);
+        if (!owner.IsValid()) continue;  // its data hasn't reached us yet (the room's members just told to the network)
+        if (settings->get_lobby() == l) { jong_pipe::send("{\"op\":\"join\",\"st\":\"in\"}"); jong_wants.erase(it); return; }  // already in it
+        GameLobbyJoinRequested_t data{};
+        data.m_steamIDLobby = l;
+        data.m_steamIDFriend = it->id ? CSteamID((uint64)it->id) : owner;
+        callbacks->addCBResult(data.k_iCallback, &data, sizeof(data));
+        jong_join_lobby = l;
+        jong_join_until = now + std::chrono::minutes(1);
+        PRINT_DEBUG("Jong join lobby %" PRIu64 " (friend %" PRIu64 ")", it->lobby, it->id);
+        jong_wants.erase(it);
+        return;
     }
     if (!overlay_mutex.try_lock()) return;  // as steam_run_callback(): never wait for it here
 
     Steam_Friends* steamFriends = get_steam_client()->steam_friends;
-    Steam_Matchmaking* steamMatchmaking = get_steam_client()->steam_matchmaking;
     uint32 appid = settings->get_local_game_id().AppID();
-    for (auto &f : friends) {
-        if (f.first.name() != jong_name || f.first.appid() != appid) continue;
-        uint64 friend_id = (uint64)f.first.id();
-        if (jong_want == "invite") {
-            steam_run_callback_update_my_lobby();
-            if (!i_have_lobby) break;  // not in a lobby / game yet: asked again on the next run
-            invite_friend(friend_id, steamFriends, steamMatchmaking);
-        } else {
-            FriendGameInfo_t info{};
-            steamFriends->GetFriendGamePlayed(friend_id, &info);
-            if (!info.m_steamIDLobby.IsValid() && !std::string(steamFriends->get_friend_rich_presence_silent(friend_id, "connect")).length()) break;  // nothing to join yet
-            f.second.window_state |= window_state_join;  // as the overlay's «Join»
-            has_friend_action.push(f.first);
-            steam_run_callback_friends_actions();
-            if (info.m_steamIDLobby.IsValid()) { jong_join_lobby = info.m_steamIDLobby; jong_join_until = std::chrono::steady_clock::now() + std::chrono::minutes(1); }
-            else jong_pipe::send("{\"op\":\"join\",\"st\":\"go\"}");  // a connect string: the game connects by itself
+    for (auto it = jong_wants.begin(); it != jong_wants.end(); ++it) {
+        bool done = false;
+        for (auto &f : friends) {
+            if (f.first.appid() != appid || (it->id ? (uint64)f.first.id() != it->id : f.first.name() != it->name)) continue;
+            uint64 friend_id = (uint64)f.first.id();
+            if (it->want == "invite") {
+                steam_run_callback_update_my_lobby();
+                if (!i_have_lobby) break;  // not in a lobby / game yet: asked again on the next run
+                invite_friend(friend_id, steamFriends, mm);
+            } else {
+                FriendGameInfo_t info{};
+                steamFriends->GetFriendGamePlayed(friend_id, &info);
+                if (!info.m_steamIDLobby.IsValid() && !std::string(steamFriends->get_friend_rich_presence_silent(friend_id, "connect")).length()) break;  // nothing to join yet
+                f.second.window_state |= window_state_join;  // as the overlay's «Join»
+                has_friend_action.push(f.first);
+                steam_run_callback_friends_actions();
+                if (info.m_steamIDLobby.IsValid()) { jong_join_lobby = info.m_steamIDLobby; jong_join_until = now + std::chrono::minutes(1); }
+                else jong_pipe::send("{\"op\":\"join\",\"st\":\"go\"}");  // a connect string: the game connects by itself
+            }
+            PRINT_DEBUG("Jong %s '%s' (%" PRIu64 ")", it->want.c_str(), it->name.c_str(), friend_id);
+            done = true;
+            break;
         }
-        PRINT_DEBUG("Jong %s '%s' (%" PRIu64 ")", jong_want.c_str(), jong_name.c_str(), friend_id);
-        jong_want.clear();
-        break;
+        if (done) { jong_wants.erase(it); break; }  // one a run: the next ones on the following runs
     }
 
     overlay_mutex.unlock();

@@ -4377,7 +4377,9 @@ void Steam_Overlay::jong_run_callback()
         } else if (ev == "invite" || ev == "join") {
             Jong_Want w{};
             w.want = ev;
-            w.name = j.value("name", std::string());
+            // the name as GBE keeps everyone's (Settings: invalid file-name characters dropped, one letter padded): Jong sends it raw
+            w.name = Settings::sanitize(j.value("name", std::string()));
+            if (w.name.size() == 1) w.name += " ";
             w.id = u64(j, "id");
             w.lobby = ev == "join" ? u64(j, "lobby") : 0;
             w.until = now + std::chrono::minutes(3);

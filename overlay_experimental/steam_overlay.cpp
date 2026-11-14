@@ -4482,7 +4482,9 @@ void Steam_Overlay::jong_run_callback()
         bool done = false;
         for (auto &f : friends) {
             if (it->want == "join" && (!settled || it->tries)) break;  // a game just started: not yet; one asked by its lobby: that way only
-            if (f.first.appid() != appid || (it->id ? (uint64)f.first.id() != it->id : f.first.name() != it->name)) continue;
+            // by name (an older Jong): the friend's current name; the map's key is the friend as first seen, often without one
+            if (f.first.appid() != appid || (it->id ? (uint64)f.first.id() != it->id
+                : f.first.name() != it->name && std::string(steamFriends->GetFriendPersonaName(CSteamID((uint64)f.first.id()))) != it->name)) continue;
             uint64 friend_id = (uint64)f.first.id();
             if (it->want == "invite") {
                 steam_run_callback_update_my_lobby();

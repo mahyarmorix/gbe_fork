@@ -4347,6 +4347,10 @@ void Steam_Overlay::render_pinned_screenshot()
 void Steam_Overlay::jong_run_callback()
 {
     auto now = std::chrono::steady_clock::now();
+    // a game just started may not listen for a join yet (its menu still loading): none asked of it in its first seconds.
+    // (Steam's own way at a start is +connect_lobby on the command line, which Jong passes too, and GBE's JoinLobby waits for the owner)
+    static const auto born = now;
+    const bool settled = now - born > std::chrono::seconds(10);
     auto u64 = [](const nlohmann::json &j, const char *k) -> uint64 {
         try { return j.contains(k) && j[k].is_string() ? std::stoull(j[k].get<std::string>()) : 0; } catch (...) { return 0; }
     };
@@ -4448,20 +4452,26 @@ void Steam_Overlay::jong_run_callback()
         } else ++it;
     }
     if (jong_wants.empty()) return;
-    // a join whose lobby we already know (Jong's backend said which): straight in, as Steam's «Join game», friend seen or not
+    // a join whose lobby we already know (Jong's backend said which): straight in, as Steam's «Join game», friend seen or not.
+    // Asked of the game up to 3 times, 15 s apart (a request the game wasn't listening for yet is lost), till we're in it
     for (auto it = jong_wants.begin(); it != jong_wants.end(); ++it) {
         if (it->want != "join" || !it->lobby) continue;
-        CSteamID l((uint64)it->lobby), owner = mm->GetLobbyOwner(l);
+        CSteamID l((uint64)it->lobby);
+        if (settings->get_lobby() == l) {  // in it: by our request, the game's +connect_lobby, or the game itself
+            jong_pipe::send("{\"op\":\"join\",\"st\":\"in\"}");
+            jong_wants.erase(it);
+            return;
+        }
+        if (!settled || now < it->next || it->tries >= 3) continue;
+        CSteamID owner = mm->GetLobbyOwner(l);
         if (!owner.IsValid()) continue;  // its data hasn't reached us yet (the room's members just told to the network)
-        if (settings->get_lobby() == l) { jong_pipe::send("{\"op\":\"join\",\"st\":\"in\"}"); jong_wants.erase(it); return; }  // already in it
         GameLobbyJoinRequested_t data{};
         data.m_steamIDLobby = l;
         data.m_steamIDFriend = it->id ? CSteamID((uint64)it->id) : owner;
         callbacks->addCBResult(data.k_iCallback, &data, sizeof(data));
-        jong_join_lobby = l;
-        jong_join_until = now + std::chrono::minutes(1);
-        PRINT_DEBUG("Jong join lobby %" PRIu64 " (friend %" PRIu64 ")", it->lobby, it->id);
-        jong_wants.erase(it);
+        it->next = now + std::chrono::seconds(15);
+        if (++it->tries >= 3) it->until = std::min(it->until, now + std::chrono::seconds(20));  // the last ask: "fail" if not in by then
+        PRINT_DEBUG("Jong join lobby %" PRIu64 " (friend %" PRIu64 ") try %d", it->lobby, it->id, it->tries);
         return;
     }
     if (!overlay_mutex.try_lock()) return;  // as steam_run_callback(): never wait for it here
@@ -4471,6 +4481,7 @@ void Steam_Overlay::jong_run_callback()
     for (auto it = jong_wants.begin(); it != jong_wants.end(); ++it) {
         bool done = false;
         for (auto &f : friends) {
+            if (it->want == "join" && (!settled || it->tries)) break;  // a game just started: not yet; one asked by its lobby: that way only
             if (f.first.appid() != appid || (it->id ? (uint64)f.first.id() != it->id : f.first.name() != it->name)) continue;
             uint64 friend_id = (uint64)f.first.id();
             if (it->want == "invite") {

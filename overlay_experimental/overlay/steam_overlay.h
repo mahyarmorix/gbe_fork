@@ -187,7 +187,8 @@ class Steam_Overlay
     struct Jong_Want {
         std::string want{}, name{};  // "invite" / "join"; the friend's Jong name (an older Jong: no id)
         uint64 id = 0, lobby = 0;    // the friend's steam id (Jong's: from their Jong number); the lobby to join (Jong's backend knows it)
-        std::chrono::steady_clock::time_point until{};
+        std::chrono::steady_clock::time_point until{}, next{};  // given up at; the join asked of the game again at (it may not have listened)
+        int tries = 0;
     };
     std::deque<Jong_Want> jong_wants{};
     std::string jong_lobby_said{};  // the lobby last told to Jong ({"op":"lobby"}), and when

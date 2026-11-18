@@ -13,6 +13,8 @@ namespace jong_pipe {
     bool send(const std::string &line);
     // the next line Jong sent, if any
     bool poll(std::string &line);
+    // Jong is on the other end now
+    bool connected();
 }
 
 #endif // __INCLUDED_JONG_PIPE_H__

@@ -441,6 +441,8 @@ public:
     ~Steam_Overlay();
 
     bool Ready() const;
+    // Jong is linked (its overlay is its own window, never Ready here): a friend's invite waits for its card's «accept»
+    bool JongHere() const;
 
     bool NeedPresent() const;
 
@@ -480,6 +482,7 @@ public:
     ~Steam_Overlay() {}
 
     bool Ready() const { return false; }
+    bool JongHere() const { return false; }
 
     bool NeedPresent() const { return false; }
 

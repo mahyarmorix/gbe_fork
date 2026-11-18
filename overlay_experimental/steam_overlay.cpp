@@ -2692,6 +2692,11 @@ void Steam_Overlay::ShowOverlay(bool state)
 
 }
 
+bool Steam_Overlay::JongHere() const
+{
+    return jong_pipe::connected();
+}
+
 void Steam_Overlay::SetLobbyInvite(Friend friendId, uint64 lobbyId)
 {
     PRINT_DEBUG("%" PRIu64 " %llu", friendId.id(), lobbyId);

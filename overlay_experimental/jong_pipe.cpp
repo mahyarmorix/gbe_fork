@@ -83,6 +83,12 @@ bool send(const std::string &line)
     return pipe != INVALID_HANDLE_VALUE && write_locked(pipe, line + "\n");
 }
 
+bool connected()
+{
+    std::lock_guard lock(mtx);
+    return pipe != INVALID_HANDLE_VALUE;
+}
+
 bool poll(std::string &line)
 {
     std::lock_guard lock(mtx);
@@ -100,6 +106,7 @@ namespace jong_pipe {
 void start() {}
 bool send(const std::string &) { return false; }
 bool poll(std::string &) { return false; }
+bool connected() { return false; }
 }
 
 #endif

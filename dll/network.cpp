@@ -897,7 +897,7 @@ void Networking::jong_add_peers(const std::vector<uint32_t> &ips)
         a.ip = htonl(ip);
         a.port = htons(udp_port);
         if (!ip || std::any_of(custom_broadcasts.begin(), custom_broadcasts.end(), [&](const IP_PORT &x) { return x.ip == a.ip; })) continue;
-        if (custom_broadcasts.size() >= 64) break;
+        if (custom_broadcasts.size() >= 256) break;  // (a game's public network: up to 250 members)
         custom_broadcasts.push_back(a);
         added = true;
     }

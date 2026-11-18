@@ -4379,6 +4379,8 @@ void Steam_Overlay::render_pinned_screenshot()
 // are in, as Steam's does: a join with its lobby goes in as soon as that lobby reaches us, friend seen or not. An older
 // Jong sends only the name. They wait in turn, each up to 3 minutes; a join's outcome goes back as {"op":"join","st":"in"|"go"|"fail"}.
 // {"ev":"peers","ips":["10.77.0.1",...]}: the room's members, looked for from now on (not only those in custom_broadcasts.txt).
+// {"ev":"friends","ids":["<steam id>",...]}: the member's Jong friends: the game's friends list is them only (a game's public
+// network has strangers on the LAN too; they stay known for lobbies and invites, just not listed as friends).
 // Our lobby goes to Jong as it changes ({"op":"lobby","id","owner","n","max"}; id "0": in none), for its backend.
 void Steam_Overlay::jong_run_callback()
 {
@@ -4438,7 +4440,13 @@ void Steam_Overlay::jong_run_callback()
                 if (x.is_string() && sscanf(x.get<std::string>().c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 && a < 256 && b < 256 && c < 256 && d < 256)
                     ips.push_back((a << 24) | (b << 16) | (c << 8) | d);
             }
-            if (ips.size() <= 64) network->jong_add_peers(ips);
+            if (ips.size() <= 250) network->jong_add_peers(ips);  // (a game's public network: up to 250)
+        } else if (ev == "friends" && j.contains("ids") && j["ids"].is_array()) {
+            std::set<uint64> ids{};
+            for (auto &x : j["ids"]) {
+                try { if (x.is_string()) ids.insert(std::stoull(x.get<std::string>())); } catch (...) {}
+            }
+            get_steam_client()->steam_friends->jong_friends_set(ids);
         }
     }
 

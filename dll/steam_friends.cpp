@@ -154,6 +154,26 @@ void Steam_Friends::resend_friend_data()
     modified = true;
 }
 
+bool Steam_Friends::jong_is_friend(uint64 id) const
+{
+    return !jong_friends_known || jong_friend_ids.count(id) > 0;
+}
+
+std::vector<Friend*> Steam_Friends::jong_listed()
+{
+    std::vector<Friend*> out{};
+    for (auto &f : friends) if (jong_is_friend((uint64)f.id())) out.push_back(&f);
+    return out;
+}
+
+void Steam_Friends::jong_friends_set(const std::set<uint64> &ids)
+{
+    std::lock_guard<std::recursive_mutex> lock(global_mutex);
+    jong_friend_ids = ids;
+    jong_friends_known = true;
+    PRINT_DEBUG("Jong friends: %zu", ids.size());
+}
+
 bool Steam_Friends::ok_friend_flags(int iFriendFlags)
 {
     if (iFriendFlags & k_EFriendFlagImmediate) return true;
@@ -281,7 +301,7 @@ int Steam_Friends::GetFriendCount( int iFriendFlags )
     PRINT_DEBUG("%i", iFriendFlags);
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     int count = 0;
-    if (ok_friend_flags(iFriendFlags)) count = static_cast<int>(friends.size());
+    if (ok_friend_flags(iFriendFlags)) count = static_cast<int>(jong_listed().size());
     PRINT_DEBUG("count %i", count);
     return count;
 }
@@ -303,8 +323,9 @@ CSteamID Steam_Friends::GetFriendByIndex( int iFriend, int iFriendFlags )
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     CSteamID id = k_steamIDNil;
     if (ok_friend_flags(iFriendFlags)) {
-        if (iFriend >= 0 && static_cast<size_t>(iFriend) < friends.size()) {
-            id = CSteamID((uint64)friends[iFriend].id());
+        auto ls = jong_listed();
+        if (iFriend >= 0 && static_cast<size_t>(iFriend) < ls.size()) {
+            id = CSteamID((uint64)ls[iFriend]->id());
         }
     }
     
@@ -340,7 +361,7 @@ EFriendRelationship Steam_Friends::GetFriendRelationship( CSteamID steamIDFriend
     PRINT_DEBUG("%llu", steamIDFriend.ConvertToUint64());
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     if (steamIDFriend == settings->get_local_steam_id()) return k_EFriendRelationshipNone; //Real steam behavior
-    if (find_friend(steamIDFriend)) return k_EFriendRelationshipFriend;
+    if (find_friend(steamIDFriend) && jong_is_friend(steamIDFriend.ConvertToUint64())) return k_EFriendRelationshipFriend;
 
     return k_EFriendRelationshipNone;
 }
@@ -637,7 +658,7 @@ bool Steam_Friends::HasFriend( CSteamID steamIDFriend, int iFriendFlags )
     PRINT_DEBUG_ENTRY();
     std::lock_guard<std::recursive_mutex> lock(global_mutex);
     bool ret = false;
-    if (ok_friend_flags(iFriendFlags)) if (find_friend(steamIDFriend)) ret = true;
+    if (ok_friend_flags(iFriendFlags)) if (find_friend(steamIDFriend) && jong_is_friend(steamIDFriend.ConvertToUint64())) ret = true;
     
     return ret;
 }

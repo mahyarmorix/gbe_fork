@@ -77,6 +77,15 @@ public ISteamFriends
     struct Avatar_Numbers add_friend_avatars(CSteamID id);
 
     static bool ok_friend_flags(int iFriendFlags);
+    // Jong: only Jong friends are the game's friends (a game's public network puts everyone who plays it on the LAN; GBE
+    // took them all for friends). jong_friends_set: the list from Jong ({"ev":"friends"}); until it comes (an older Jong), everyone
+    std::set<uint64> jong_friend_ids{};
+    bool jong_friends_known = false;
+    bool jong_is_friend(uint64 id) const;
+    std::vector<Friend*> jong_listed();
+public:
+    void jong_friends_set(const std::set<uint64> &ids);
+private:
 
     static void steam_friends_callback(void *object, Common_Message *msg);
     static void steam_friends_run_every_runcb(void *object);
